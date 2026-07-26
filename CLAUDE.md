@@ -1,7 +1,7 @@
 # shasou-recorder
 センサまたはCARLA等のシミュレーションを接続したJetson等で動作させ、End-to-end自動運転向けのデータ収集を実施するツールキット。shasouエコシステムの一部
 
-## Project Overview
+## 0. shasou-recorder とは
 ### shasou eco system概要
 shasouエコシステムは、以下のフローでEnd-to-end自動運転向けのデータ収集・キュレーションを実施
 
@@ -15,10 +15,13 @@ flowchart LR
     A --> B --> C --> D --> E
 ```
 
-shasouエコシステムは、以下3リポジトリから構成される
-- **shasou-recorder** (本リポジトリ): Jetson等で動作させ、車載収録を実施するツールキット (ROS 2 / MCAP)
+shasouエコシステムは、以下4リポジトリから構成される
+- **shasou-recorder**（本リポジトリ）: Jetson等で動作させ、車載収録を実施するツールキット (ROS 2 / MCAP)。想定している概要は`docs/recorder_summary.md`も参照
 - **shasou-studio**: recorderで取得したデータをインポートして保管し、nuScenes互換データ変換、Scene切り取り、nuScenes形式出力等を実施するためのWebアプリ。データキュレーションのための分析機能も含む
 - **shasou-core**: 上記 2 つが共有するmanifestスキーマ・MCAPトピック規約・trajectory成果物形式をPydantic + JSON Schemaで定義
+- **shasou-msgs**: shasou-recorderと外部ROSノードのやり取りに使用するオリジナルROSメッセージ
+
+recorder の責務は「収録と保管」まで。 nuScenes 変換は studio の責務であり、 recorder は nuScenes の概念 (sample / instance / calibrated_sensor) を扱わない。
 
 #### データの階層構造
 記録されるデータは以下の階層構造を持つ
@@ -60,9 +63,9 @@ erDiagram
 ```
 
 - vehicle_type: 車種を表す。ホイールベース・外形寸法等の公称物理パラメータと、CAN仕様のデフォルト（can_defaults）を持つ。同一vehicle_typeでも個体差でCAN仕様が異なりうる分はvehicleのcan_overridesが上書きする。shasou-studioで定義を作成・管理し、recorderは同期時にvehicleから紐付けて取得（studio非依存のローカル定義でも動作可）
-- platform: センサ構成（sensor_rig）・車種（vehicle_type）が一致するデータをグルーピングしたもの。同一platformに複数の車両個体（vehicle）が属しうる（フリート運用）。shasou-studioで定義を作成・管理し。recorderは同期時にvehicleから紐付けて取得（studio非依存のローカル定義でも動作可）
-- vehicle: 車両個体を表す。所属platform（platform_id）と、車種デフォルトをフィールド単位で上書きするCAN仕様（can_overrides）を持つ。実効CAN仕様は車種のcan_defaultsをcan_overridesが覆って求める。運用管理情報はshasou-studioの責務でcoreは持たない。shasou-studioで登録・管理し、recorder同期時のキーとして作用する（studio非依存のローカル定義でも動作可）
-- calibration: キャリブレーション1回ごとに作成される（複数センサを含む）。1回のcalibrationはnuScenes形式変換時に複数センサ分のcalibrated_sensorレコードに展開される。shasou-recorderがキャリブレーションごとに自動作成する
+- platform: センサ構成（sensor_rig）・車種（vehicle_type）が一致するデータをグルーピングしたもの。同一platformに複数の車両個体（vehicle）が属しうる（フリート運用）。shasou-studioで定義を作成・管理し。recorderは同期時にvehicleから紐付けて取得（studio非依存のローカル定義でも動作可）。学習データセットの構成 (複数 platform を混ぜるか) は studio の責務で、 platform は収録リグの同一性という客観的事実だけを表す
+- vehicle: 車両個体を表す。所属platform（platform_id）と、車種デフォルト仕様を個体ごとに上書きするCAN仕様（can_overrides）を持つ。実効CAN仕様は車種のcan_defaultsをcan_overridesが覆って求める。運用管理情報はshasou-studioの責務でcoreは持たない。shasou-studioで登録・管理し、recorder同期時のキーとして作用する（studio非依存のローカル定義でも動作可）
+- calibration: キャリブレーション1回ごとに作成される（複数センサを含む）。**キャリブ値は個体固有**なので vehicle 配下に置く。他車両へ流用してはならない。**計算・管理は studio の責務**で、recorder は定義として同期して読むだけ。ただしキャリブ用データの収録 (チェッカーボード撮影等) は通常の収録なので`record --now` を使い、`tags` に用途を残せばよい (専用機能は持たない)
 - drive: 1走行ごとに取得され、IDとしてdrive_idが割り当てられる。1つのdriveがnuScenes形式変換後のlogと1対1で対応。shasou-recorderが走行ごとに自動作成する
 
 #### データ収集のワークフロー
@@ -83,142 +86,426 @@ erDiagram
     - `archived`：S3標準
     - `glacier`：Glacier Deep Archive退避
 
-## 収集データの形式
-### 収集ワークフローにおけるshasou-recorderの責務
-- 車上: データ収録してSSDへ保存
-- オフィス: NASへ転送 + チェックサム検証
+---
 
-### 収集データのフォルダ構成
-shasou-recorderは以下のフォルダ構成でデータを収集
+## 1. 絶対に守る規律
+### 1.1 core/ と ros/ の分離 (最重要)
+
+```
+src/shasou_recorder/
+  core/   純 Python。ROS に依存しない
+  ros/    rclpy / rosbag2_py 依存。core/ を呼ぶ一方向依存
+  cli.py  CLI エントリポイント
+```
+
+- **core/ から rclpy / rosbag2_py / shasou_msgs を import してはならない。**
+  将来 ROS 以外のミドルウェアからの収録や、MCAP を直接読む変換器へ core/ を
+  そのまま流用するため
+- **ros/ → core/ の一方向依存のみ。** core/ が ros/ を import するのは禁止
+- この規律は CI で機械検証する (shasou-core の `check_dependencies.py` と同方式:
+  ROS 非導入環境で core/ の全モジュールが import できることを確認)
+
+依存してよいもの:
+
+| | core/ | ros/ | cli.py |
+|---|---|---|---|
+| 標準ライブラリ・pydantic | ○ | ○ | ○ |
+| shasou-core | ○ | ○ | ○ |
+| rclpy / rosbag2_py | **×** | ○ | △ (薄いラッパのみ) |
+| shasou_msgs | **×** | ○ | × |
+
+### 1.2 契約の正は shasou-core
+
+トピック名・型・QoS・フィールド規約・manifest スキーマは **すべて shasou-core が正**。
+recorder はそれを読んで従うだけで、独自に規約を定義しない。core を変更したく
+なったら、recorder 側で回避せず core に変更を入れること。
+
+例外は**実行時設定**（保存先パス、ROS_DOMAIN_ID、bag 分割サイズ等）。これは
+recorder 固有なので recorder が独自に持つ (§5.3)。
+
+---
+
+## 2. エコシステム共通の設計思想
+
+shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち返る。
+
+- **正はソースに近い側**: bag が一次データ。`events.jsonl` と `topic_stats.json` は
+  bag からの派生物で、いつでも再生成できる。両者が食い違ったら bag が正
+- **時刻は ns 整数**: エポックからのナノ秒。float 秒は使わない (core の EventTag は
+  `strict=True` で float を拒否する)。CARLA では `/clock` のシミュレーション時刻
+- **右手系のみ**: 左手系 (CARLA/Unreal) は CARLA ブリッジの境界で変換済み。
+  recorder は右手系しか見ない
+- **判定を core に焼き込まない**: 統計は計測値の器に徹し、「健全か否か」の閾値
+  判断は recorder / studio 側が持つ
+
+---
+
+## 3. モジュール構成
+
+### core/ (ROS 非依存)
+
+| ファイル | 役割 | 状態 |
+|---|---|---|
+| `session.py` | 収録セッションの状態機械。finalizing の順序と失敗方針 | 実装済み |
+| `stats.py` | トピック統計のオンライン累積、ディスク監視 | 実装済み |
+| `layout.py` | フォルダ構成の管理、drive_id 採番、パス解決 | 未実装 |
+| `manifest.py` | manifest.yaml の生成 | 未実装 |
+| `events.py` | events.jsonl の生成 | 未実装 |
+| `checksum.py` | チェックサム計算・検証 | 未実装 |
+| `catalog.py` | catalog.sqlite の読み書き | 未実装 |
+| `config.py` | 設定ファイルのスキーマ | 未実装 |
+| `definitions.py` | vehicle_type/platform/vehicle/calibration 定義の取得。`DefinitionProvider` Protocol + `LocalFileProvider` | 未実装 |
+
+### ros/ (rclpy 依存)
+
+| ファイル | 役割 | 状態 |
+|---|---|---|
+| `node.py` | 収録ノード。購読・サービスサーバー・シグナル処理 | 未実装 |
+| `writer.py` | rosbag2 (MCAP) への書き込み。`BagWriter` Protocol を満たす | 未実装 |
+| `qos.py` | core の `QosProfile` → rclpy `QoSProfile` 変換 | 未実装 |
+| `converters.py` | ROS メッセージ → core の型 (EventTag 等) | 未実装 |
+
+---
+
+## 4. 収録セッション (core/session.py)
+
+### 4.1 状態遷移
+
+```
+IDLE → PREFLIGHT → RECORDING → FINALIZING → DONE
+              ↘ abort() ────────────────────↗
+```
+
+- 1 セッション = 1 drive (= nuScenes の 1 log)。**使い捨て**で、次のドライブは
+  新しいインスタンスを作る
+- `abort()` は収録開始前の打ち切り (preflight 失敗、収録前の停止要求)。bag が
+  まだ開いていないので finalizing は行わない
+
+### 4.2 停止要求の集約
+
+停止は複数経路から来る。すべて `request_stop()` に集約する:
+
+| 経路 | StopReason |
+|---|---|
+| Ctrl+C (SIGINT) | `SIGNAL` |
+| StopRecording サービス | `SERVICE` |
+| ディスク残量の閾値割れ | `DISK_FULL` |
+| トピック途絶 (将来) | `TOPIC_TIMEOUT` |
+| 収録処理の異常 | `ERROR` |
+
+- **最初の要求を採用する** (先に来た理由が本当の原因である可能性が高い)
+- **冪等**: 二度目以降は無視して `False` を返す。例外にはしない
+  (StopRecording の二重呼び出しや、Ctrl+C 直後のサービス呼び出しは実際に起こる)
+- **IDLE での停止要求だけはエラー** (何も収録していない)
+- 停止理由は `session.stop_tags()` で manifest の tags に載る
+  (`stop_reason` / `completed` / `stop_detail`)
+
+### 4.3 シグナル処理 (ros/node.py の責務)
+
+- **rclpy のデフォルト SIGINT ハンドラを無効化する**
+  (`rclpy.init(signal_handler_options=SignalHandlerOptions.NO)`)。
+  無効化しないと Ctrl+C で finalizing の前にノードが死ぬ
+- **シグナルハンドラは最小限**。`threading.Event` を立てるだけにして、実際の
+  finalizing はメインループで行う。ハンドラ内で bag をクローズすると書き込み
+  途中で割り込むことになりファイルが壊れる
+- **二度目の Ctrl+C は強制終了**。finalizing が長引いたときの慣例に従う
+
+### 4.4 finalizing の手順
+
+```
+1. bag クローズ
+2. topic_stats.json 書き出し
+3. events.jsonl 生成
+4. manifest.yaml 書き出し
+5. catalog 更新
+```
+
+- **manifest を後半に置くのは、manifest の存在が「ドライブが完成した」印になるため。**
+  manifest があれば有効なドライブ、無ければ不完全と判定できる
+- **失敗しても例外は投げず `FinalizeResult` に載せて返す**。呼び出し側が
+  StopRecording のレスポンスに変換する
+- **最初の失敗で打ち切り、そこまでの成果物は残す**。bag さえ残っていれば後から
+  手動で復旧できる。manifest 前に失敗すれば manifest は書かれないので、上記の
+  完成判定が保たれる
+- **StopRecording の応答は 30 秒以内に返すこと。** CARLA ブリッジ側の
+  `RECORDER_RESPONSE_TIMEOUT_SEC` が 30 秒。統計を収録後に MCAP 全読みで計算
+  すると数百 GB の bag では確実に超えるため、統計はオンライン累積する (§6)
+
+---
+
+## 5. CLI
+
+### 5.1 コマンド
+
+| コマンド | 役割 |
+|---|---|
+| `record` | 収録。2 つの起動モードを持つ (下記) |
+| `transfer` | 車上 SSD → NAS へ転送 + チェックサム検証、status 更新 |
+| `catalog list` / `catalog show` | ドライブ一覧・詳細 |
+| `sync` | studio との双方向 reconcile (定義を pull、収録データを push)。§11 参照 |
+
+### 5.2 record の起動モード
+
+軸は「開始のトリガが外部か即時か」。**終了はどちらも §4.2 の停止要求に統一される。**
+
+- `record --wait-for-service`: サービスサーバーとして待機し、StartRecording を
+  待つ。CARLA、および将来のユーザーデバイスからの制御
+- `record --now`: 即座に収録開始し、停止要求 (Ctrl+C 等) まで続ける。
+  実機の手動収録
+
+将来ユーザーデバイスを繋ぐときは、デバイスが StartRecording / StopRecording を
+呼べば `--wait-for-service` がそのまま使える。
+
+### 5.3 設定ファイルと CLI 引数
+
+**設定ファイル (recorder 独自スキーマ)** — セッション間で変わらないもの:
+
+- platform ID / vehicle ID / calib_id (値は core の型と整合させる)
+- データ保存先ルート
+- トピック名前空間 (既定 `/shasou`)
+- ROS_DOMAIN_ID
+- bag の分割サイズ・時間
+- ディスク残量の閾値 (既定 10 GB 程度)
+- DefinitionProvider の設定 (`definitions/` のパス、studio の同期先 URL 等)
+
+**CLI 引数** — 走行ごとに変わるもの:
+
+- location / weather / driver / notes
+
+設定ファイルで既定値、CLI 引数で上書き。将来 GUI や Web UI を作る場合も、
+それらは CLI か同じ Python API を呼ぶだけなので、インターフェース変更に強い。
+
+**設定を core に置かない理由**: 実行環境の情報 (保存先パス、DDS 設定) は studio が
+知る必要がなく、core は「recorder と studio が共有すべき契約」の置き場だから。
+studio がフリート管理で知りたい platform / vehicle / calib_id は、収録結果である
+manifest に入っているので、設定ファイル自体を共有する必要はない。
+
+---
+
+## 6. 統計とディスク監視 (core/stats.py)
+
+### 6.1 オンライン累積 (O(1) メモリ)
+
+数十万〜数百万メッセージを扱うので、全メッセージの時刻を保持しない。
+1 トピックあたり定数個のスカラーだけを更新する。
+
+- `measured_hz` = (N-1) / span。span は **first/last メッセージの時刻差**。
+  収録開始・終了のオーバーヘッドを含まないので、データセットとして切り出した
+  ときの実態と合う
+- `drop_rate` = 1 - measured_hz / expected_hz (0〜1 に丸める)。
+  `expected_hz` は **platform 定義 (`ChannelSpec.expected_hz`) 由来**。
+  フレームレートはデータセットの重要スペックなので platform で明示する
+- `max_gap_ns` は **header.stamp を持つトピックのみ**。ヘッダの無いトピック
+  (std_msgs/Bool 等) は受信時刻で first/last を代用し、max_gap は算出しない
+- 統計対象は **bag に記録するトピックだけ**。契約外の想定外トピックは無視する
+
+### 6.2 ディスク監視
+
+**別スレッドで 5〜10 秒間隔のポーリング。** 2 つの役目がある:
+
+1. `min_free_bytes` の記録
+2. **閾値割れの検知 → 停止要求 (`DISK_FULL`)**。枯渇して書き込みが失敗する前に、
+   正常な finalizing 経路で bag を閉じる。中断ではなく「短いけれど完全な
+   ドライブ」として終われる
+
+メインループ (メッセージ受信) から分離するのは、statvfs の I/O 待ちを収録の
+主処理に持ち込まないため。`total_bytes_written` はディレクトリ走査のコストが
+あるので **finalizing で 1 回だけ**測る。
+
+---
+
+## 7. トピックと QoS
+
+### 7.1 契約の参照
+
+購読すべきトピック・型・必須フィールドは **shasou-core の `schemas/topics.py`** が正。
+`contracts_for_source(source, recorded_only=True)` で「bag に記録すべき契約」が得られる。
+
+### 7.2 記録しないトピック
+
+`TopicContract.recorded=False` の契約は **publish されるが bag に記録しない**:
+
+- `/tf` (動的 tf): `gt/ego_odom` と情報が重複し、リプレイ時の tf 時刻補間問題を
+  持ち込む。RViz で見たいときは再生側で odom→tf 変換ノードを挟む
+- `gt/object_attributes`: visibility 等は studio の変換パイプラインがオフライン
+  算出する方針
+
+CARLA ブリッジはこれらを publish し続けるので、**除外は recorder の記録設定の責務**。
+
+### 7.3 QoS は一致させること
+
+DDS は publisher と subscriber の QoS が両立しないと**接続しない**。
+core の `TopicContract.qos` が publisher 側の設定を規定しているので、
+`ros/qos.py` がこれを rclpy の `QoSProfile` に変換して購読に使う。
+
+- 通常のトピック: reliable / keep_last / depth=10
+- `/tf_static` のみ: reliable / keep_last / depth=1 / **transient_local**
+  (late joiner が後から購読しても最後の 1 通を受け取れる。recorder が
+  StartRecording より後に購読を始めても tf_static を拾えるのはこのため)
+
+---
+
+## 8. shasou_msgs との連携
+
+recorder が**サービスサーバー**、CARLA ブリッジ等がクライアント。
+
+| サービス名 | 型 |
+|---|---|
+| `/shasou/recorder/start_recording` | `shasou_msgs/srv/StartRecording` |
+| `/shasou/recorder/stop_recording` | `shasou_msgs/srv/StopRecording` |
+
+- **StartRecording リクエスト**: source / location / route_id / scenario / weather。
+  これらは「recorder が知り得ない情報」だけ。platform / vehicle / calib_id は
+  recorder の設定が持つ
+  - `route_id` → manifest の `tags["route_id"]`
+  - `scenario` → `tags["scenario"]`
+  - `location` / `weather` → manifest の同名フィールド
+- **応答が返った時点で bag は開いていること**。クライアントはこれを待って走り出す
+- **StopRecording リクエスト**: `completed` (ルート正常完走か) / `reason` →
+  `tags["completed"]` / `tags["stop_reason"]`
+- **応答が返った時点で bag はクローズ済みで、manifest まで書けていること**
+
+`msg/EventTag` は `header.stamp` で時刻を持つ。core の `EventTag` は **ns 整数**
+なので、`ros/converters.py` が相互変換する。
+
+---
+
+## 9. preflight 検証
+
+`record` 開始時に以下を確認し、**ERROR があれば収録を開始しない**:
+
+- トピックの存在確認 (`get_topic_names_and_types`)。実際にメッセージが流れるかは
+  確認しない (ROS 開発者なら「トピックはあるが送信できていない」ケースは想定内)
+- **タイムアウト付きで待つ**。実機モードでは recorder を先に起動してセンサ
+  ドライバが後から立ち上がることがある
+- **キャリブの網羅性**: `calib_id` が指す CalibrationSet に platform の全センサ分の
+  entry が揃っているか。欠けたまま走ると 1 ルート分が無駄になる
+- core の検証関数を使う: `validate_observed_topics` /
+  `validate_manifest_against_platform` / `validate_calibration_coverage` /
+  `validate_vehicle_consistency`
+
+---
+
+## 10. データレイアウト
+
+**`definitions/` (同期される定義) と収録データを分離する。** 前者は studio が
+編集元で recorder は読むだけ、後者は recorder が生成する一次データ。この分離に
+より「`definitions/` は消して再同期できるが、`drives/` は絶対に消してはいけない」
+という違いが構造から明白になる (バックアップ方針もここで分かれる)。
 
 ```
 data/
-├── platform_lincoln_6cam-lidar/       # platformごとにフォルダを分ける
-|   ├── drives/
-|   │   └── 2026-07-16_1030_vehicle01_osaka-umeda/   # drive_id
-|   │       ├── manifest.yaml          # ドライブの自己記述メタデータ
-|   │       ├── bags/
-|   │       │   ├── segment_0000.mcap  # 分割収録（後述）
-|   │       │   ├── segment_0001.mcap
-|   │       │   └── checksums.sha256
-|   │       ├── tags/
-|   │       │   └── events.jsonl       # 収録中のイベントタグ（追記のみ）
-|   │       ├── health/
-|   │       │   └── topic_stats.json   # Hz・ドロップ率・ディスクログ
-|   │       └── notes.md               # 同乗者の自由記述（任意）
-|   └── vehicles/
-|       ├── vehicle01/
-|       |   └── calibrations/
-|       |       ├── calib_v003_2026-07-01/ # キャリブレーション実施ごとに1フォルダ
-|       |       │   ├── intrinsics/        # カメラ内部パラメータ
-|       |       │   ├── extrinsics/        # センサ間外部パラメータ
-|       |       │   └── report.pdf         # キャリブ品質レポート
-|       |       └── ...
-|       ├── vehicle02/
-|       :   └── calibrations/
-|               ├── calib_v003_2026-07-01/
-|               └── ...
-├── platform_lincoln_7cam-lidar/
-:
-├── vehicle_types/
-|   └── lincoln_mkz.yaml
-└── catalog.sqlite                 # 全ドライブの索引
+├── definitions/                       # studio が編集元。recorder は同期して読むだけ
+│   ├── vehicle_types/
+│   │   └── lincoln_mkz.yaml
+│   ├── platforms/
+│   │   └── platform_lincoln_6cam-lidar.yaml
+│   ├── vehicles/
+│   │   └── vehicle01.yaml
+│   └── calibrations/
+│       └── vehicle01/                 # キャリブ値は車両個体固有
+│           └── calib_v003_2026-07-01/
+│               ├── calibration.yaml   # CalibrationSet (正)
+│               └── report.pdf         # 品質レポート (再投影誤差等)
+├── platform_lincoln_6cam-lidar/       # recorder が生成する収録データ
+│   └── drives/
+│       └── 2026-07-16_1030_vehicle01_osaka-umeda/   # drive_id
+│           ├── manifest.yaml          # ドライブの自己記述メタデータ
+│           ├── bags/
+│           │   ├── segment_0000.mcap  # 分割収録
+│           │   ├── segment_0001.mcap
+│           │   └── checksums.sha256
+│           ├── tags/events.jsonl      # イベントタグ (追記のみ)
+│           ├── health/topic_stats.json
+│           └── notes.md               # 自由記述 (任意)
+└── catalog.sqlite                     # 全ドライブの索引
 ```
 
-### 各収集データの内容
-#### manifest.yamlの中身
-nuScenesのlogテーブル等に必要な情報を保持（将来的にはCosmos Reason等による自動タグ付けも想定）する。
+- **`calibration.yaml` は単一ファイル**。1 回のキャリブが core の 1 つの
+  `CalibrationSet` オブジェクト (calib_id / vehicle / captured_at / entries) に
+  対応するので、`intrinsics/` `extrinsics/` にディレクトリを分けない
+- 同期範囲は**この recorder が動く vehicle の分だけでよい**。フリート全体の
+  キャリブを各 Jetson に配る必要はない
+
+**drive_id の採番**: `日付_時刻_車両_場所`。同一分内の衝突は稀 (CARLA でも
+マップ切り替えに時間がかかる) なので、**衝突したら少し待って採番し直す**。
+実装はディレクトリ作成を排他的に行い (`os.makedirs(exist_ok=False)`)、
+失敗したらリトライする。
+
+### manifest.yaml
 
 ```yaml
 drive_id: 2026-07-16_1030_vehicle01_osaka-umeda
 uuid: 7f3a...
-source: real                   # real / carla / alpasim等
-schema_version: v0.1.0         # shasou-coreの互換性判定に使用
+source: real                   # real / carla
+schema_version: 0.3.0          # shasou-core の互換性判定に使用 (MAJOR 一致を要求)
 platform: platform_lincoln_6cam-lidar
 vehicle: vehicle01
-ego_pose_backend: ppk-ins      # 自己位置推定  
+ego_pose_backend: ppk-ins      # carla なら carla-gt
 calib_id: calib_v003_2026-07-01
 date_captured: "2026-07-16"
-location: osaka-umeda          # → nuScenes変換後のlog.locationとなる
+location: osaka-umeda          # → nuScenes の log.location
 driver: tanaka
-weather: rain                  # → nuScenes変換後のscene.descriptionの素材となる
-recorder_version: v1.2.0       # 収録ソフトのバージョン
-sensor_config:                 # トピック名 ⇔ nuScenesチャネル名の対応
-  LIDAR_TOP: /sensing/lidar_top/points
-  RADAR_FRONT: /sensing/radar_front/points
-  CAM_FRONT: /sensing/cam_front/image_raw/compressed
-  ...
-status: verified               # recorded → transferred → verified (→ imported)
+weather: rain                  # → scene.description の素材
+recorder_version: v1.2.0
+sensor_config:                 # 正規チャネル名 ⇔ 実トピック名 (実センサのみ)
+  LIDAR_TOP: /shasou/lidar_top/points
+  RADAR_FRONT: /shasou/radar_front/points
+  CAM_FRONT: /shasou/cam_front/image_raw/compressed
+tags:                          # 分類・検索用。キーは小文字 snake_case
+  route_id: town12_route003
+  scenario: cut_in
+  stop_reason: service
+  completed: "true"
+status: recorded               # recorded → transferred → verified → imported
+archive_status: none           # none / archived / glacier
 ```
 
-#### catalog.sqlite
-検索高速化のため、manifestと同内容をcatalog.sqlite（データベース）に記録しておく。
+- `status` の `imported` は **studio が Raw 層取り込み時に書き戻す**。
+  recorder が自力で書くのは `verified` まで
+- `archive_status` は status とは独立の軸 (「verified かつ NAS」と
+  「verified かつ S3 のみ」が両立するため)
+- source が `carla` の場合、sensor_config の実センサに加えて gt 系トピック
+  (`gt/ego_odom`, `gt/objects` 等) が bag に含まれる
 
-#### event.jsonl
-運転中にユーザーが各種端末（物理/ステアリングボタンやタブレット）から入力した情報をROS2 Topicとして受け取り、JSONL形式で以下のように保存しておく（フィールド等はshasou-coreで定義）
+### events.jsonl
 
 ```jsonl
-{"timestamp": 1752641234.512, "type": "interesting", "label": "cut-in", "source": "driver_button"}
-{"timestamp": 1752641301.220, "type": "marker", "label": "construction zone", "source": "tablet"}
+{"timestamp": 1752641234512000000, "type": "interesting", "label": "cut-in", "source": "driver_button"}
+{"timestamp": 1752641301220000000, "type": "marker", "label": "construction zone", "source": "tablet"}
 ```
 
-#### ego_pose_backendの選択肢
-メタデータの`ego_pose_backend`に記録する自己位置推定の方法は、以下から選択する
+**timestamp はエポックからのナノ秒整数** (float 秒は core が拒否する)。
+`type` は core の `EventType` の語彙、`source` は小文字 snake_case の自由文字列。
+実機でイベント入力デバイスが無い間は、購読だけ実装して空ファイルでよい。
 
-```mermaid
-flowchart TB
-    MCAP["MCAP（生データ）"]
+---
 
-    A["<b>A: PPK + INS</b><br/>生観測 + 電子基準点"]
-    B["<b>B: LIO + グラフ最適化</b><br/>GNSSファクタ併用"]
-    C["<b>C: NDT地図マッチング</b><br/>事前点群地図が必要"]
+## 11. 定義の同期 (DefinitionProvider)
 
-    TRAJ["<b>trajectory成果物（共通形式）</b><br/>nuScenes変換器が消費"]
+vehicle_type / platform / vehicle / calibration はいずれも **studio が編集元
+(source of truth)**。recorder は `DefinitionProvider` 経由で取得し、
+`definitions/` にキャッシュして読む。当面は `LocalFileProvider` (ローカル YAML を
+読むだけ) のみ実装し、studio HTTP 同期はインターフェースだけ切っておく。
+スタンドアロン利用者 (studio を立てない) は LocalFileProvider だけで完結する。
 
-    MCAP --> A
-    MCAP --> B
-    MCAP --> C
+**recorder がキャリブを持つ理由は preflight 検証のため。** 収録自体にキャリブは
+不要 (bag には生のセンサデータが入り、適用は下流の変換時) だが、
+`validate_calibration_coverage` で「platform の全センサ分のキャリブが揃っているか」
+を走り出す前に確認し、欠けていれば止める。1 ルート分を無駄にしないため。
 
-    A --> TRAJ
-    B --> TRAJ
-    C --> TRAJ
+**同期のタイミング**: 収録前と収録後の両端で双方向 reconcile (`sync` コマンド)。
+収録後だけだと定義の更新が 1 サイクル遅れ、古い定義で収録してしまう。
+オフラインでも最後に同期した定義で動作し、鮮度は起動時に警告する。
+
+---
+
+## 12. 開発コマンド
+
+```bash
+pip install -e ".[dev]"
+pytest
+python scripts/check_dependencies.py   # core/ の ROS 非依存を検証
 ```
 
-### 収集に使用するTopic
-
-
-
-#### 実車・シミュレーション共通
-
-以下の中から、
-
-|Topic名|Topic型|frame_id|座標系|内容|
-|---|---|---|---|---|
-|`shasou/<sensor_id>/image_raw/compressed`|sensor_msgs/CompressedImage|<id>|-|RGBカメラの画像|
-|`shasou/<sensor_id>/camera_info`|sensor_msgs/CameraInfo|<id>|-|RGBカメラの内部パラメータ|
-|`shasou/<sensor_id>/points`|sensor_msgs/PointCloud2|<id>|センサ位置を原点とした相対座標|LiDAR点群|
-|`shasou/<sensor_id>/points`|sensor_msgs/PointCloud2|<id>|センサ位置を原点とした相対座標|RADAR点群|
-|`shasou/<sensor_id>/fix`|sensor_msgs/NavSatFix|gnss|緯度経度|GNSSが測定した緯度経度|
-|`shasou/<sensor_id>/data`|sensor_msgs/Imu|imu|IMUセンサ座標系（x:前方、y:左方、z:上方）|IMUの出力|
-|`shasou/vehicle/drive_state`|ackermann_msgs/AckermannDriveStamped|base_link|-|speed（m/s、後退負）+ steering_angle（rad）|
-|`shasou/vehicle/pedals`|sensor_msgs/JointState|""|-|ペダルストローク（正規化[0,1]）|
-|`shasou/vehicle/reverse`|std_msgs/Bool|-|-|ギア後退|
-|`shasou/vehicle/handbrake`|std_msgs/Bool|-|-|パーキングブレーキ|
-|`/shasou/events`|shasou_msgs/EventTag（独自メッセージ）|-|-|ユーザーが各種デバイスで入力したイベント情報|
-
-`sensor_id`を含むTopicのTopic名は、実際にはmanifest.yamlの`sensor_config`で設定する。
-
-#### 実車のみ
-
-#### シミュレーションのみ
-
-|Topic名|Topic型|frame_id|座標系|内容|
-|---|---|---|---|---|
-|`shasou/gt/ego_odom`|nav_msgs/Odometry|map（base_linkがchild）|グローバル座標（ROS右手系）|自車位置（`/tf`をnav_msgs/msg/Odometry型で表したもの）|
-|`shasou/gt/objects`|vision_msgs/Detection3DArray|map|グローバル座標（ROS右手系）|全アクターの3D BBox座標（アノテーション情報）|
-|`shasou/agent/plan`|nav_msgs/Path|map|グローバル座標（ROS右手系）|PDM-Liteの計画軌跡|
-|`/clock`|rosgraph_msgs/Clock|-|-|シミュレーション時刻|
-|`/tf_static`|tf2_msgs/TFMessage|base_link（各センサがchild）|自車位置を原点とした相対座標|自車基準位置（base_link=後車軸の真下の地面）から各センサ位置までの相対座標|
-|`/tf`|tf2_msgs/TFMessage|map（base_linkがchild）|グローバル座標（ROS右手系）|自車基準位置（base_link）のグローバル座標|
-
-
+変更を入れたら: テストが通ること + §1 の依存規律を守っていることを確認。
