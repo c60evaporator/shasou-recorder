@@ -32,7 +32,7 @@ erDiagram
     platform ||--o{ vehicle : ""
     vehicle ||--o{ calibration : ""
     vehicle ||--o{ drive : ""
-    calibration ||--|{ drive : ""
+    calibration ||--o{ drive : ""
     
     vehicle_type {
         string vehicle_type_id
@@ -428,9 +428,14 @@ data/
   キャリブを各 Jetson に配る必要はない
 
 **drive_id の採番**: `日付_時刻_車両_場所`。同一分内の衝突は稀 (CARLA でも
-マップ切り替えに時間がかかる) なので、**衝突したら少し待って採番し直す**。
-実装はディレクトリ作成を排他的に行い (`os.makedirs(exist_ok=False)`)、
-失敗したらリトライする。
+マップ切り替えに時間がかかる) だが、起きたら**連番サフィックスを付けて採番し直す**
+(`2026-07-16_1030_vehicle01_osaka-umeda_2`)。実装はディレクトリ作成を排他的に行い
+(`os.makedirs(exist_ok=False)`)、失敗したら次のサフィックスを試す。
+
+**待って採番し直してはならない。** 採番は StartRecording のハンドラ内で走るので、
+分が変わるまで待つと CARLA ブリッジの応答タイムアウト (30 秒) を超え、クライアントが
+ルートを中断する一方で recorder は収録を開始する、という不整合が起きる (§8)。
+サフィックスの上限 (既定 99) まで埋まっていたらエラーとし、二重起動を検出する。
 
 ### manifest.yaml
 
