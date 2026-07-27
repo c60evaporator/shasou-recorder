@@ -92,7 +92,7 @@ _UNSAFE_COMPONENTS = frozenset({"", ".", ".."})
 RESERVED_ROOT_NAMES = frozenset({DEFINITIONS_DIRNAME, CATALOG_FILENAME})
 
 
-def _safe_component(
+def safe_component(
     value: str, kind: str, *, reserved: frozenset[str] = frozenset()
 ) -> str:
     """パス要素として使える ID か検証して返す。
@@ -100,6 +100,9 @@ def _safe_component(
     このモジュールの仕事はパスの組み立てなので、外から来た ID (設定ファイルや
     StartRecording のリクエスト由来) がディレクトリ階層を跨がないことをここで
     保証する。core の型は ID の中身を制約していないため、防御は組み立て側に置く。
+
+    公開しているのは config.py が設定ファイルの ID を同じ規則で弾くため。
+    規則を複製すると、予約名を足したときに片方だけ更新される。
     """
     if not isinstance(value, str) or value in _UNSAFE_COMPONENTS:
         raise ValueError(f"{kind} が空または不正: {value!r}")
@@ -117,13 +120,13 @@ def _safe_component(
     return value
 
 
-def _safe_platform_id(value: str) -> str:
+def safe_platform_id(value: str) -> str:
     """platform_id はデータルート直下のディレクトリ名になるので予約名を弾く。
 
     platform_id を検証する箇所すべてから呼ぶこと。ある場所では通り別の場所では
     弾かれる、という不整合を避けるため。
     """
-    return _safe_component(value, "platform_id", reserved=RESERVED_ROOT_NAMES)
+    return safe_component(value, "platform_id", reserved=RESERVED_ROOT_NAMES)
 
 
 # --------------------------------------------------------------------------
@@ -147,25 +150,25 @@ class DefinitionsLayout:
 
     def vehicle_type(self, vehicle_type_id: str) -> Path:
         """vehicle_types/<vehicle_type_id>.yaml"""
-        name = _safe_component(vehicle_type_id, "vehicle_type_id")
+        name = safe_component(vehicle_type_id, "vehicle_type_id")
         return self.root / VEHICLE_TYPES_DIRNAME / f"{name}{DEFINITION_SUFFIX}"
 
     def platform(self, platform_id: str) -> Path:
         """platforms/<platform_id>.yaml"""
-        name = _safe_platform_id(platform_id)
+        name = safe_platform_id(platform_id)
         return self.root / PLATFORMS_DIRNAME / f"{name}{DEFINITION_SUFFIX}"
 
     def vehicle(self, vehicle_id: str) -> Path:
         """vehicles/<vehicle_id>.yaml"""
-        name = _safe_component(vehicle_id, "vehicle_id")
+        name = safe_component(vehicle_id, "vehicle_id")
         return self.root / VEHICLES_DIRNAME / f"{name}{DEFINITION_SUFFIX}"
 
     # ── キャリブ (車両個体固有なので vehicle 配下) ──────────────────────
 
     def calibration_dir(self, vehicle_id: str, calib_id: str) -> Path:
         """calibrations/<vehicle_id>/<calib_id>/"""
-        vehicle = _safe_component(vehicle_id, "vehicle_id")
-        calib = _safe_component(calib_id, "calib_id")
+        vehicle = safe_component(vehicle_id, "vehicle_id")
+        calib = safe_component(calib_id, "calib_id")
         return self.root / CALIBRATIONS_DIRNAME / vehicle / calib
 
     def calibration(self, vehicle_id: str, calib_id: str) -> Path:
@@ -182,7 +185,7 @@ class DefinitionsLayout:
         calibration.yaml を持つディレクトリだけを数える。同期途中の空ディレクトリ
         を有効なキャリブとして拾わないため。
         """
-        vehicle = _safe_component(vehicle_id, "vehicle_id")
+        vehicle = safe_component(vehicle_id, "vehicle_id")
         base = self.root / CALIBRATIONS_DIRNAME / vehicle
         if not base.is_dir():
             return []
@@ -312,14 +315,14 @@ class DataLayout:
         return self.root / CATALOG_FILENAME
 
     def platform_dir(self, platform_id: str) -> Path:
-        return self.root / _safe_platform_id(platform_id)
+        return self.root / safe_platform_id(platform_id)
 
     def drives_dir(self, platform_id: str) -> Path:
         return self.platform_dir(platform_id) / DRIVES_DIRNAME
 
     def drive(self, platform_id: str, drive_id: str) -> DriveLayout:
         """ドライブのレイアウトを解決する。**副作用は無い** (作成はしない)。"""
-        drive = _safe_component(drive_id, "drive_id")
+        drive = safe_component(drive_id, "drive_id")
         return DriveLayout(root=self.drives_dir(platform_id) / drive, drive_id=drive)
 
     def create_drive(self, platform_id: str, drive_id: str) -> DriveLayout:
@@ -416,7 +419,7 @@ def format_drive_id(
     location / vehicle / 日時の正は manifest のフィールドであり、drive_id は
     人間可読な識別子にすぎない。
     """
-    vehicle = _safe_component(vehicle_id, "vehicle_id")
+    vehicle = safe_component(vehicle_id, "vehicle_id")
     drive_id = (
         f"{started_at:%Y-%m-%d}_{started_at:%H%M}"
         f"_{vehicle}_{normalize_location(location)}"
