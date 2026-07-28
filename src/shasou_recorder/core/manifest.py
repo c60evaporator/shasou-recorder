@@ -37,7 +37,6 @@ status/archive_status core の既定 (recorded / none)
 from __future__ import annotations
 
 import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping, Optional
@@ -54,6 +53,7 @@ from shasou_core.schemas.topics import (
     resolve_topic_name,
 )
 
+from .atomicio import write_text_atomic
 from .config import DriveOptions, RecorderConfig, recorder_version
 from .layout import LOCATION_FALLBACK, DriveAllocation, DriveLayout
 from .yamlio import dump_mapping, load_mapping
@@ -206,43 +206,6 @@ def load_manifest(path: str | os.PathLike[str]) -> DriveManifest:
     return DriveManifest.model_validate(data)
 
 
-def _write_text_atomic(path: Path, text: str) -> None:
-    """同じディレクトリの一時ファイルに書いてから rename する。
-
-    manifest の存在が完成の印なので、「中途半端な manifest が見える」瞬間を
-    作らない (§4.4)。車載 Jetson は走行中の電源断がありうるため、rename の
-    耐久性まで確保する: 本体を fsync してから replace し、親ディレクトリも
-    fsync する (でないと rename 自体がディスクに届いていない場合がある)。
-
-    汎用化は 2 例目 (topic_stats.json) が出てから。YAML 固有ではないので
-    yamlio には置かない。
-    """
-    fd, tmp_name = tempfile.mkstemp(
-        dir=path.parent, prefix=f".{path.name}.", suffix=".tmp"
-    )
-    tmp = Path(tmp_name)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            handle.write(text)
-            handle.flush()
-            os.fsync(handle.fileno())
-        # mkstemp は 0600 で作るので、通常のファイル作成と同じ見え方に直す。
-        # NAS 経由で studio (別ユーザー) が読む経路があるため。
-        os.chmod(tmp, 0o644)
-        os.replace(tmp, path)
-    except BaseException:
-        # 失敗しても一時ファイルを残さない (次回の書き出しやディレクトリ走査の
-        # ノイズになる)。rename 済みなら tmp はもう無いので missing_ok。
-        tmp.unlink(missing_ok=True)
-        raise
-
-    dir_fd = os.open(path.parent, os.O_RDONLY)
-    try:
-        os.fsync(dir_fd)
-    finally:
-        os.close(dir_fd)
-
-
 @dataclass(frozen=True)
 class ManifestWriter:
     """manifest.yaml を書き出す (session.ArtifactWriter を満たす)。
@@ -260,6 +223,10 @@ class ManifestWriter:
         return cls(manifest=manifest, path=drive.manifest)
 
     def write(self) -> Path:
-        """manifest.yaml を原子的に書き出して、そのパスを返す。"""
-        _write_text_atomic(self.path, dump_manifest(self.manifest))
+        """manifest.yaml を原子的に書き出して、そのパスを返す。
+
+        「中途半端な manifest が見える」瞬間を作らない (§4.4)。手順は
+        atomicio に切り出し済み — events.jsonl が 2 例目になったため。
+        """
+        write_text_atomic(self.path, dump_manifest(self.manifest))
         return self.path

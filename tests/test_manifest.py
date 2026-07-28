@@ -315,7 +315,7 @@ class TestWriter:
         def boom(src, dst):
             raise OSError("disk full")
 
-        monkeypatch.setattr("shasou_recorder.core.manifest.os.replace", boom)
+        monkeypatch.setattr("shasou_recorder.core.atomicio.os.replace", boom)
 
         with pytest.raises(OSError):
             writer.write()

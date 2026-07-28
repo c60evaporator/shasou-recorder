@@ -163,8 +163,9 @@ shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち
 | `config.py` | 設定ファイルのスキーマ | 実装済み |
 | `definitions.py` | vehicle_type/platform/vehicle/calibration 定義の取得。`DefinitionProvider` Protocol + `LocalFileProvider` | 実装済み |
 | `manifest.py` | manifest.yaml の生成。`sensor_config` の解決 (導出 + 設定の上書き) | 実装済み |
-| `yamlio.py` | YAML の読み書き (`safe_load` 固定、マッピング検証)。上記 3 つが共有 | 実装済み |
-| `events.py` | events.jsonl の生成 | 未実装 |
+| `events.py` | events.jsonl の生成。収録中の EventTag 蓄積 | 実装済み |
+| `yamlio.py` | YAML の読み書き (`safe_load` 固定、マッピング検証)。config / definitions / manifest が共有 | 実装済み |
+| `atomicio.py` | 成果物の原子的書き出し (一時ファイル → fsync → rename)。manifest / events が共有 | 実装済み |
 | `checksum.py` | チェックサム計算・検証 | 未実装 |
 | `catalog.py` | catalog.sqlite の読み書き | 未実装 |
 
