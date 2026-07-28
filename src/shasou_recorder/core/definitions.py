@@ -40,7 +40,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Protocol, TypeVar, runtime_checkable
 
-import yaml
 from pydantic import BaseModel, ValidationError
 
 from shasou_core.schemas.calibration import CalibrationSet
@@ -56,6 +55,7 @@ from shasou_core.validation import (
 
 from .config import DefinitionsConfig, DefinitionsProvider, RecorderConfig
 from .layout import DefinitionsLayout
+from .yamlio import YamlInvalidError, YamlReadError, load_mapping
 
 
 class DefinitionError(ValueError):
@@ -81,10 +81,9 @@ class DefinitionInvalidError(DefinitionError):
 # YAML 読み込み
 # --------------------------------------------------------------------------
 #
-# 手順は config.py の load_config と同じ (yaml.safe_load 固定、空・非マッピングを
-# 弾く)。**まだ共通化しない** — config.py の申し送りどおり、definitions.py は
-# 2 例目で、3 例目 (manifest.py) が出た時点で core/yamlio.py へ移す。2 例では
-# 「manifest のスキーマ版の扱い」が見えず、早すぎる抽象を固定してしまう。
+# 読み込み手順は core/yamlio.py に切り出し済み (config.py / manifest.py と共通)。
+# ここに残すのは definitions 固有の 2 点 — 不在を専用の例外にして探索パスと
+# 候補を添えること、スキーマ違反にパスを添えて包むこと。
 
 _M = TypeVar("_M", bound=BaseModel)
 
@@ -100,6 +99,9 @@ def _load_definition(
     こそが診断の主目的だから。pydantic のメッセージは全文を保持し `from` で連鎖
     させるので、情報は減らない。
     """
+    # 不在チェックを yamlio に委ねないのは、探索パスに加えて「実在する calib_id」
+    # のような候補を添えたいのと、不在だけを専用の例外型で返したいため
+    # (同期漏れは他の失敗と対処が違う)。
     if not path.is_file():
         raise DefinitionNotFoundError(
             f"{kind} の定義が見つからない: {path}"
@@ -107,26 +109,11 @@ def _load_definition(
         )
 
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as error:
-        raise DefinitionError(f"{kind} の定義を読めない: {path} ({error})") from error
-
-    try:
-        # safe_load であること。definitions/ は studio や NAS 経由で置かれるので、
-        # 任意オブジェクトを構築する loader を使ってはならない (§1.1)。
-        data = yaml.safe_load(text)
-    except yaml.YAMLError as error:
-        raise DefinitionInvalidError(
-            f"{kind} の定義の YAML が壊れている: {path}\n{error}"
-        ) from error
-
-    if data is None:
-        raise DefinitionInvalidError(f"{kind} の定義が空: {path}")
-    if not isinstance(data, dict):
-        raise DefinitionInvalidError(
-            f"{kind} の定義のトップレベルはマッピングであること: {path} "
-            f"({type(data).__name__} が来た)"
-        )
+        data = load_mapping(path, what=f"{kind} の定義")
+    except YamlReadError as error:
+        raise DefinitionError(str(error)) from error
+    except YamlInvalidError as error:
+        raise DefinitionInvalidError(str(error)) from error
 
     try:
         return model.model_validate(data)

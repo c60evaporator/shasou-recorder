@@ -52,7 +52,6 @@ from importlib.metadata import version as _distribution_version
 from pathlib import Path
 from typing import Annotated, Any, Optional
 
-import yaml
 from pydantic import (
     BaseModel,
     BeforeValidator,
@@ -62,10 +61,11 @@ from pydantic import (
     model_validator,
 )
 
-from shasou_core.constants import TOPIC_NAMESPACE
+from shasou_core.constants import TOPIC_NAMESPACE, is_valid_channel_name
 from shasou_core.schemas.common import DataSource, EgoPoseBackend
 
 from .layout import DataLayout, safe_component, safe_platform_id
+from .yamlio import YamlError, dump_mapping, load_mapping
 
 # 単位はフィールド名 (_bytes / _sec / _days) で明示する。バイト量だけは桁が
 # 読みにくいので定数を経由する。
@@ -315,6 +315,12 @@ class RecorderConfig(RecorderModel):
     # ── ROS / DDS ───────────────────────────────────────────────────────
     # 既定は core の定数を参照する (トピック規約の正は core: §1.2)
     topic_namespace: str = TOPIC_NAMESPACE
+    # 規約どおりの名前で publish しないセンサのための、チャネル別のトピック名
+    # 上書き ("CAM_FRONT": "/camera/color/image_raw/compressed")。実車のベンダ
+    # ドライバ (RealSense 等) は規約と違う名前を使うので、これが無いと収録できない。
+    # CARLA ブリッジは規約どおりなので空でよい。
+    # 実トピック名は走行ごとに変わらないので名前空間と同じ層 (設定ファイル) に置く。
+    topic_overrides: dict[str, str] = Field(default_factory=dict)
     # 省略時は環境変数 (ROS_DOMAIN_ID) に従う。実際に環境変数を設定するのは
     # ros/ の責務で、core は値を保持するだけ。
     ros_domain_id: Optional[int] = Field(default=None, ge=0, le=232)
@@ -345,6 +351,27 @@ class RecorderConfig(RecorderModel):
     @classmethod
     def _check_calib_id(cls, value: str) -> str:
         return safe_component(value, "calib_id")
+
+    @field_validator("topic_overrides")
+    @classmethod
+    def _check_topic_overrides(cls, value: dict[str, str]) -> dict[str, str]:
+        for channel, topic in value.items():
+            # チャネル名の規約の正は core (CAM_/LIDAR_/RADAR_ + 大文字英数字)。
+            # 実在するチャネルかは platform 定義と突き合わせないと分からないので、
+            # ここでは綴りだけ見る (実在確認は manifest.resolve_sensor_config)。
+            if not is_valid_channel_name(channel):
+                raise ValueError(
+                    f"topic_overrides のキーがチャネル名の規約に違反: {channel!r} "
+                    "(CAM_/LIDAR_/RADAR_ で始まり大文字英数字とアンダースコアのみ)"
+                )
+            # 相対名を許すとノード名前空間に依存して sensor_config が曖昧になる。
+            # manifest に載るのは「実トピック名」なので絶対名であること。
+            if not topic.startswith("/"):
+                raise ValueError(
+                    f"topic_overrides の値は絶対トピック名 ('/' 始まり) であること: "
+                    f"{channel} -> {topic!r}"
+                )
+        return value
 
     @field_validator("topic_namespace")
     @classmethod
@@ -380,37 +407,24 @@ class RecorderConfig(RecorderModel):
 # 読み書き
 # --------------------------------------------------------------------------
 #
-# YAML ヘルパをここに置いたまま別モジュールに切っていないのは、共通化すべき形
-# (安全な loader の選択、エラー整形、スキーマ版の扱い) が manifest.py /
-# definitions.py を書くまで見えないため。3 例目が出た時点で core/yamlio.py へ
-# 移すこと。今切ると、まだ 1 例しかない形を早すぎる抽象として固定してしまう。
+# YAML の読み書き手順は core/yamlio.py に切り出し済み (definitions.py / manifest.py
+# と共通)。ここに残すのは「ファイル層の失敗を ConfigError に包む」という config
+# 固有の方針だけ。スキーマ違反を包まないのも config 固有 (下記 docstring)。
 
 
 def load_config(path: str | os.PathLike[str]) -> RecorderConfig:
     """設定ファイル (YAML) を読む。
 
     ファイル層の失敗は ConfigError、スキーマ違反は pydantic の ValidationError。
+    不在も読めないも同じ ConfigError に落とすのは、設定ファイルが 1 つしかなく
+    「どのファイルが悪いか」を区別する必要が無いため (definitions.py は複数の
+    定義を引くので不在を別の型にしている)。
     """
     file_path = Path(path).expanduser()
     try:
-        text = file_path.read_text(encoding="utf-8")
-    except OSError as error:
-        raise ConfigError(f"設定ファイルを読めない: {file_path} ({error})") from error
-
-    try:
-        # safe_load であること。設定は NAS 経由や他人の手で置かれうるので、
-        # 任意オブジェクトを構築する loader を使ってはならない。
-        data = yaml.safe_load(text)
-    except yaml.YAMLError as error:
-        raise ConfigError(f"設定ファイルの YAML が壊れている: {file_path}\n{error}") from error
-
-    if data is None:
-        raise ConfigError(f"設定ファイルが空: {file_path}")
-    if not isinstance(data, dict):
-        raise ConfigError(
-            f"設定ファイルのトップレベルはマッピングであること: {file_path} "
-            f"({type(data).__name__} が来た)"
-        )
+        data = load_mapping(file_path, what="設定ファイル")
+    except YamlError as error:
+        raise ConfigError(str(error)) from error
     return RecorderConfig.model_validate(data)
 
 
@@ -419,11 +433,7 @@ def dump_config(config: RecorderConfig) -> str:
 
     展開済みの値を書き出すので、``~`` や ``$VAR`` は展開後のパスになる。
     """
-    return yaml.safe_dump(
-        config.model_dump(mode="json"),
-        allow_unicode=True,   # location 等に日本語が入りうる
-        sort_keys=False,      # フィールドの定義順を保つ (人が読むため)
-    )
+    return dump_mapping(config.model_dump(mode="json"))
 
 
 def recorder_version() -> str:

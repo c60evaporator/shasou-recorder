@@ -159,13 +159,14 @@ shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち
 |---|---|---|
 | `session.py` | 収録セッションの状態機械。finalizing の順序と失敗方針 | 実装済み |
 | `stats.py` | トピック統計のオンライン累積、ディスク監視 | 実装済み |
-| `layout.py` | フォルダ構成の管理、drive_id 採番、パス解決 | 未実装 |
-| `manifest.py` | manifest.yaml の生成 | 未実装 |
+| `layout.py` | フォルダ構成の管理、drive_id 採番、パス解決 | 実装済み |
+| `config.py` | 設定ファイルのスキーマ | 実装済み |
+| `definitions.py` | vehicle_type/platform/vehicle/calibration 定義の取得。`DefinitionProvider` Protocol + `LocalFileProvider` | 実装済み |
+| `manifest.py` | manifest.yaml の生成。`sensor_config` の解決 (導出 + 設定の上書き) | 実装済み |
+| `yamlio.py` | YAML の読み書き (`safe_load` 固定、マッピング検証)。上記 3 つが共有 | 実装済み |
 | `events.py` | events.jsonl の生成 | 未実装 |
 | `checksum.py` | チェックサム計算・検証 | 未実装 |
 | `catalog.py` | catalog.sqlite の読み書き | 未実装 |
-| `config.py` | 設定ファイルのスキーマ | 未実装 |
-| `definitions.py` | vehicle_type/platform/vehicle/calibration 定義の取得。`DefinitionProvider` Protocol + `LocalFileProvider` | 未実装 |
 
 ### ros/ (rclpy 依存)
 
