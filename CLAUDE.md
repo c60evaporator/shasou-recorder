@@ -110,9 +110,20 @@ src/shasou_recorder/
 | | core/ | ros/ | cli.py |
 |---|---|---|---|
 | 標準ライブラリ・pydantic | ○ | ○ | ○ |
+| pyyaml | ○ | ○ | ○ |
 | shasou-core | ○ | ○ | ○ |
 | rclpy / rosbag2_py | **×** | ○ | △ (薄いラッパのみ) |
 | shasou_msgs | **×** | ○ | × |
+
+pyyaml は **YAML の読み書きのために core/ で許可する外部依存**。設定ファイル・
+`definitions/` の定義・`manifest.yaml` がいずれも YAML であり、その読み書きの
+当事者が core/ だから (現在は `core/config.py`。`definitions.py` / `manifest.py`
+も同じ)。読み込みは **`yaml.safe_load` に限る** — 設定と定義は NAS 経由や他人の
+手で置かれうるので、任意オブジェクトを構築する loader を使ってはならない。
+
+**この表に無い外部依存を core/ に足さないこと。** 必要になったら recorder 側で
+回避せず、まずこの表を更新して理由を書く。表が実態とズレたまま放置されると、
+次に別の理由で依存が足されるときの歯止めが効かなくなる。
 
 ### 1.2 契約の正は shasou-core
 
@@ -512,5 +523,10 @@ pip install -e ".[dev]"
 pytest
 python scripts/check_dependencies.py   # core/ の ROS 非依存を検証
 ```
+
+**未整備 (別タスク)**: `pyproject.toml` と `scripts/check_dependencies.py` はまだ
+無いので、上記コマンドはそれらを作ってから使える。当面のテスト実行は
+`PYTHONPATH=src:<shasou-core>/src pytest`。`pyproject.toml` を作るときの
+dependencies は `pydantic` / `pyyaml` / `shasou-core` (§1.1 の依存表と一致させる)。
 
 変更を入れたら: テストが通ること + §1 の依存規律を守っていることを確認。
