@@ -226,6 +226,9 @@ def _write_text_atomic(path: Path, text: str) -> None:
             handle.write(text)
             handle.flush()
             os.fsync(handle.fileno())
+        # mkstemp は 0600 で作るので、通常のファイル作成と同じ見え方に直す。
+        # NAS 経由で studio (別ユーザー) が読む経路があるため。
+        os.chmod(tmp, 0o644)
         os.replace(tmp, path)
     except BaseException:
         # 失敗しても一時ファイルを残さない (次回の書き出しやディレクトリ走査の
