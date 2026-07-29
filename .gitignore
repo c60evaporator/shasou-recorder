@@ -1,1 +1,6 @@
 __pycache__/
+
+# パッケージのビルド生成物
+build/
+dist/
+*.egg-info/

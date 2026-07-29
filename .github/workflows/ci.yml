@@ -1,0 +1,77 @@
+name: CI
+
+# push は main のみ。PR ブランチへの push で二重に回さないため。
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # requires-python の下限と、現行の新しめの安定版で挟む
+        python-version: ["3.10", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      # 契約の正は shasou-core (CLAUDE.md §1.2)。PyPI 未公開なので隣に置いて
+      # editable で入れる (開発機で両リポジトリを並べるのと同じ形)。ref は既定の
+      # main — core の契約変更が recorder に波及したことを CI が即座に示す。
+      - uses: actions/checkout@v4
+        with:
+          repository: c60evaporator/shasou-core
+          path: shasou-core
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          # 依存が変わったらキャッシュが失効するようにする
+          cache-dependency-path: pyproject.toml
+
+      - name: Install shasou-core
+        run: pip install -e ./shasou-core
+
+      - name: Install
+        run: pip install -e ".[dev]"
+
+      # ROS 2 が無いランナーなので core/ のテストだけが回る (ros マーカーは
+      # pyproject の addopts で既定除外)。将来 ros/ を実装したら、ROS 2 Humble の
+      # コンテナで `pytest -m ros` を回すジョブをここに 1 つ足せばよい。
+      - name: Run tests
+        run: pytest
+
+  dependency-discipline:
+    # core/ は ROS に依存してはならない (CLAUDE.md §1.1)。ROS 2 を入れていない
+    # このランナーで core/ の全モジュールが読めることが、そのまま規律の証明になる。
+    # Python 版に依らないので 1 版のみ。
+    name: dependency discipline (no ROS 2)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: c60evaporator/shasou-core
+          path: shasou-core
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install
+        run: |
+          pip install -e ./shasou-core
+          pip install -e ".[dev]"
+
+      - name: Import every core module without rclpy / rosbag2_py / shasou_msgs
+        run: python scripts/check_dependencies.py

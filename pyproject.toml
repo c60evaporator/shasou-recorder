@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+# **config.py の DISTRIBUTION_NAME と一致させること。** recorder_version() は
+# この名前で importlib.metadata を引き、見つからないと "0.0.0+unknown" を返す。
+# ずれても実行時エラーにはならず、全 manifest の recorder_version が静かに
+# フォールバック値になる (tests/test_packaging.py が一致を固定している)。
+name = "shasou-recorder"
+version = "0.1.0"
+description = "Data collection toolkit for end-to-end autonomous driving (ROS 2 / MCAP)"
+readme = "README.md"
+# shasou-core と揃える。Jetson の JetPack 5 系が Python 3.8 なので将来
+# 下げたくなるかもしれないが、下げるときは core と同時に下げること。
+requires-python = ">=3.10"
+# 規律: core/ が依存してよい外部ライブラリは CLAUDE.md §1.1 の依存表がすべて。
+# 表を更新せずにここへ足さないこと。rclpy / rosbag2_py は apt で入る ROS 2 の
+# パッケージなので pip の依存にはできず、ros extra も作らない (README 参照)。
+dependencies = [
+    "pydantic>=2.5",
+    "pyyaml>=6",
+    # PyPI 未公開。**直接参照 (git+https://...) にはしない** — 開発は
+    # shasou-core と shasou-recorder を並べてチェックアウトし、core を editable で
+    # 入れて往復しながら進めるため、pip install のたびに GitHub の main が入って
+    # ローカルの core を上書きすると邪魔になる (PyPI 公開時にも外す羽目になる)。
+    # 先に `pip install -e ../shasou-core` すれば要求は満たされ、pip は PyPI を
+    # 見に行かない。CI は shasou-core を checkout して同じ順で入れている。
+    "shasou-core>=0.1",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+# [project.scripts] はまだ書かない。cli.py が未実装で、宣言すると import に
+# 失敗するコンソールスクリプトが入るため (cli.py と同時に足すこと)。
+
+[project.urls]
+Repository = "https://github.com/c60evaporator/shasou-recorder"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/shasou_recorder"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ros: ROS 2 環境 (rclpy / rosbag2_py) が要るテスト。既定では実行しない",
+]
+# ROS 2 が無い環境 (CI・core/ の開発) では ros マーカーを外して回す。ROS 2 を
+# source した環境では `pytest -m ros` で選び直せる (後から渡した -m が勝つ)。
+addopts = "-m 'not ros' --strict-markers"

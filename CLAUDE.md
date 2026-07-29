@@ -125,6 +125,12 @@ pyyaml は **YAML の読み書きのために core/ で許可する外部依存*
 回避せず、まずこの表を更新して理由を書く。表が実態とズレたまま放置されると、
 次に別の理由で依存が足されるときの歯止めが効かなくなる。
 
+pip の依存として宣言できるのは **pydantic / pyyaml / shasou-core だけ**
+(`pyproject.toml` の `dependencies`)。rclpy / rosbag2_py は apt で入る ROS 2 の
+パッケージなので pip では入らず、ros extra も作らない。**ros/ を動かすには ROS 2
+Humble を source した環境が要る** (§12)。裏を返せば core/ は ROS 2 無しで
+インストールもテストもでき、それ自体がこの規律の証明になっている。
+
 ### 1.2 契約の正は shasou-core
 
 トピック名・型・QoS・フィールド規約・manifest スキーマは **すべて shasou-core が正**。
@@ -152,6 +158,9 @@ shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち
 ---
 
 ## 3. モジュール構成
+
+現状: **core/ は `checksum.py` を除いて実装済み。ros/ と `cli.py` は未着手。**
+CI が回しているのは core/ のテストと依存規律の検証だけ (ROS 2 環境が要らないため)。
 
 ### core/ (ROS 非依存)
 
@@ -533,14 +542,32 @@ vehicle_type / platform / vehicle / calibration はいずれも **studio が編�
 ## 12. 開発コマンド
 
 ```bash
+pip install -e ../shasou-core          # 契約の正。PyPI 未公開なので先に入れる
 pip install -e ".[dev]"
 pytest
 python scripts/check_dependencies.py   # core/ の ROS 非依存を検証
 ```
 
-**未整備 (別タスク)**: `pyproject.toml` と `scripts/check_dependencies.py` はまだ
-無いので、上記コマンドはそれらを作ってから使える。当面のテスト実行は
-`PYTHONPATH=src:<shasou-core>/src pytest`。`pyproject.toml` を作るときの
-dependencies は `pydantic` / `pyyaml` / `shasou-core` (§1.1 の依存表と一致させる)。
+shasou-core を直接参照 (`git+https://...`) にしていないのは、両リポジトリを並べて
+チェックアウトし、core を editable で入れて往復しながら開発するため (`pip install`
+のたびに GitHub の main でローカルの core が上書きされると邪魔になる)。CI も
+shasou-core を checkout して同じ順で入れている。
+
+**ros/ を動かすには ROS 2 Humble を source した環境が要る。** rclpy / rosbag2_py は
+apt で入る ROS 2 のパッケージで pip の依存にできないので、ros extra は用意しない。
+ROS 2 が要るテストは `ros` マーカーで分離してあり、既定では実行されない:
+
+```bash
+source /opt/ros/humble/setup.bash
+pytest -m ros                          # ROS 2 が要るテストだけを回す
+```
+
+ROS 2 を source したシェルでは、ROS 側の pytest プラグイン (launch_testing 系) が
+新しい pytest とフック定義が合わず pytest 自体が起動しないことがある。このリポジトリは
+pytest プラグインを使わないので、その場合は自動ロードを切ればよい:
+
+```bash
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 pytest
+```
 
 変更を入れたら: テストが通ること + §1 の依存規律を守っていることを確認。
