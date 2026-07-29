@@ -28,9 +28,11 @@ bag に記録するトピックだけ。契約外の想定外トピックは無�
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Callable, Iterable, Optional
 
 from shasou_core.schemas.health import DiskStats, TopicStat, TopicStats
@@ -224,6 +226,17 @@ class StatsCollector:
             ],
             disk=disk,
         )
+
+
+def load_topic_stats(path: str | os.PathLike[str]) -> TopicStats:
+    """topic_stats.json を読む (manifest.load_manifest / events.load_events と同形)。
+
+    catalog が収録の規模 (duration / message_count) を索引に載せるために読む。
+    topic_stats.json を知るモジュールをここ 1 つに保つための入口で、recorder 自身が
+    書いたファイルなので、壊れていれば json / pydantic の例外をそのまま通す。
+    """
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return TopicStats.model_validate(data)
 
 
 # --------------------------------------------------------------------------

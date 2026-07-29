@@ -164,10 +164,11 @@ shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち
 | `definitions.py` | vehicle_type/platform/vehicle/calibration 定義の取得。`DefinitionProvider` Protocol + `LocalFileProvider` | 実装済み |
 | `manifest.py` | manifest.yaml の生成。`sensor_config` の解決 (導出 + 設定の上書き) | 実装済み |
 | `events.py` | events.jsonl の生成。収録中の EventTag 蓄積 | 実装済み |
+| `notes.py` | notes.md の書き出し (収録開始時。finalizing の手順ではない) | 実装済み |
 | `yamlio.py` | YAML の読み書き (`safe_load` 固定、マッピング検証)。config / definitions / manifest が共有 | 実装済み |
-| `atomicio.py` | 成果物の原子的書き出し (一時ファイル → fsync → rename)。manifest / events が共有 | 実装済み |
+| `atomicio.py` | 成果物の原子的書き出し (一時ファイル → fsync → rename)。manifest / events / notes が共有 | 実装済み |
 | `checksum.py` | チェックサム計算・検証 | 未実装 |
-| `catalog.py` | catalog.sqlite の読み書き | 未実装 |
+| `catalog.py` | catalog.sqlite の読み書き。manifest からの再構築 | 実装済み |
 
 ### ros/ (rclpy 依存)
 
@@ -428,9 +429,9 @@ data/
 │           │   ├── segment_0000.mcap  # 分割収録
 │           │   ├── segment_0001.mcap
 │           │   └── checksums.sha256
-│           ├── tags/events.jsonl      # イベントタグ (追記のみ)
+│           ├── tags/events.jsonl      # イベントタグ (1 行 1 件・時刻順)
 │           ├── health/topic_stats.json
-│           └── notes.md               # 自由記述 (任意)
+│           └── notes.md               # 自由記述 (任意。収録開始時に書き出す)
 └── catalog.sqlite                     # 全ドライブの索引
 ```
 
@@ -496,6 +497,17 @@ archive_status: none           # none / archived / glacier
 **timestamp はエポックからのナノ秒整数** (float 秒は core が拒否する)。
 `type` は core の `EventType` の語彙、`source` は小文字 snake_case の自由文字列。
 実機でイベント入力デバイスが無い間は、購読だけ実装して空ファイルでよい。
+
+**収録中はメモリに保持し、finalizing で timestamp 昇順に一括書き出しする。**
+追記方式では受信順にしか書けず、時刻順に直せないため (jsonl は bag からの
+派生物なので、途中で落ちても bag から再生成できる: §2)。
+
+### notes.md
+
+`DriveOptions.notes` (CLI の `--notes` 等) をそのまま書く自由記述。**収録開始時に
+書き出し、finalizing では触らない。** 内容は開始時点で確定しており、かつ収録中に
+運用者が書き足した内容を上書きしないため。notes が空ならファイル自体を作らない
+(読み手が人だけなので、「ファイルが無い = 記述が無い」で足りる)。
 
 ---
 

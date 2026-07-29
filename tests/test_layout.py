@@ -139,6 +139,25 @@ class TestCreateDrive:
         assert [d.drive_id for d in data.iter_drives(PLATFORM)] == [
             "2026-07-16_0900_vehicle01_osaka-umeda", DRIVE]
 
+    def test_iter_platforms(self, tmp_path):
+        # catalog の再構築が全ドライブを走査するのに使う
+        data = layout(tmp_path)
+        assert data.iter_platforms() == []
+
+        data.create_drive("platform_b", DRIVE)
+        data.create_drive("platform_a", DRIVE)
+        assert data.iter_platforms() == ["platform_a", "platform_b"]
+
+    def test_iter_platforms_skips_recorder_owned_names(self, tmp_path):
+        # definitions/ は同期される定義、catalog.sqlite は索引。platform ではない
+        data = layout(tmp_path)
+        data.create_drive(PLATFORM, DRIVE)
+        (data.root / "definitions" / "platforms").mkdir(parents=True)
+        data.catalog.write_bytes(b"")
+        (data.root / ".partial-sync").mkdir()
+
+        assert data.iter_platforms() == [PLATFORM]
+
 
 class TestNoSideEffects:
     def test_resolving_paths_creates_nothing(self, tmp_path):

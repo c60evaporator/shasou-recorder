@@ -317,6 +317,26 @@ class DataLayout:
     def platform_dir(self, platform_id: str) -> Path:
         return self.root / safe_platform_id(platform_id)
 
+    def iter_platforms(self) -> list[str]:
+        """収録データがある platform_id を昇順で返す (読み取りのみ)。
+
+        catalog の再構築が全ドライブを走査するのに使う。データルート直下で
+        recorder 自身が使う名前 (RESERVED_ROOT_NAMES) と、隠しディレクトリ
+        (書き出し中の一時ディレクトリ等) は除く。
+
+        `drives/` の有無は見ない — 空の platform ディレクトリを返しても
+        iter_drives が空リストになるだけで、判定を増やす意味が無い。
+        """
+        if not self.root.is_dir():
+            return []
+        return sorted(
+            entry.name
+            for entry in self.root.iterdir()
+            if entry.is_dir()
+            and not entry.name.startswith(".")
+            and entry.name.casefold() not in RESERVED_ROOT_NAMES
+        )
+
     def drives_dir(self, platform_id: str) -> Path:
         return self.platform_dir(platform_id) / DRIVES_DIRNAME
 
