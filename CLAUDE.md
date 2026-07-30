@@ -164,9 +164,10 @@ shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち
 
 ## 3. モジュール構成
 
-現状: **core/ は `checksum.py` を除いて実装済み。ros/ は `qos.py` のみ、`cli.py` は
-未着手。** CI が回しているのは core/ のテストと依存規律の検証だけ (ROS 2 環境が
-要らないため。ros/ のテストは `ros` マーカーで分離してある: §12)。
+現状: **core/ は `checksum.py` を除いて実装済み。ros/ は `qos.py` と
+`converters.py` のみ、`cli.py` は未着手。** CI が回しているのは core/ のテストと
+依存規律の検証だけ (ROS 2 環境が要らないため。ros/ のテストは `ros` マーカーで
+分離してある: §12)。
 
 ### core/ (ROS 非依存)
 
@@ -192,7 +193,7 @@ shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち
 | `node.py` | 収録ノード。購読・サービスサーバー・シグナル処理 | 未実装 |
 | `writer.py` | rosbag2 (MCAP) への書き込み。`BagWriter` Protocol を満たす | 未実装 |
 | `qos.py` | core の `QosProfile` → rclpy `QoSProfile` 変換 | 実装済み |
-| `converters.py` | ROS メッセージ → core の型 (EventTag 等) | 未実装 |
+| `converters.py` | ROS メッセージ ⇔ core の型 (時刻・空値・語彙の差の吸収) | 実装済み |
 
 ---
 
@@ -567,6 +568,10 @@ ROS 2 が要るテストは `ros` マーカーで分離してあり、既定で�
 source /opt/ros/humble/setup.bash
 pytest -m ros                          # ROS 2 が要るテストだけを回す
 ```
+
+`converters.py` は **shasou_msgs** (別リポジトリの ROS メッセージ定義) にも依存する。
+ワークスペースでビルドして source していないと、そのテストは skip される (落ちない
+ので、`pytest -m ros` の結果に skip が出ていたらここを疑うこと)。
 
 ROS 2 を source したシェルでは、ROS 側の pytest プラグイン (launch_testing 系) が
 新しい pytest とフック定義が合わず pytest 自体が起動しないことがある。このリポジトリは

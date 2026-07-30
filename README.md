@@ -38,6 +38,10 @@ source /opt/ros/humble/setup.bash
 pytest -m ros                            # ROS 2 が要るテストだけを回す
 ```
 
+`ros/converters.py` は [shasou_msgs](https://github.com/c60evaporator/shasou-msgs)
+(ROS メッセージ定義) にも依存する。ワークスペースでビルドして source していないと、
+そのテストは skip される (エラーにはならない)。
+
 ROS 2 を source したシェルでは、ROS 側の pytest プラグイン (launch_testing 系) が
 新しい pytest とフック定義が合わず pytest 自体が起動しないことがある。このリポジトリは
 pytest プラグインを使わないので、自動ロードを切って回せばよい:
