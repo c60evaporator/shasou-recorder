@@ -131,6 +131,11 @@ pip の依存として宣言できるのは **pydantic / pyyaml / shasou-core �
 Humble を source した環境が要る** (§12)。裏を返せば core/ は ROS 2 無しで
 インストールもテストもでき、それ自体がこの規律の証明になっている。
 
+ROS 2 が無い環境では ros/ の import が `ImportError` になる。**ros/ 側では包まず、
+cli.py が `record` の入口で「ROS 2 Humble を source してから実行してください」と
+案内すること** (ライブラリ層は素直に例外を投げ、アプリケーション層が文脈を足す
+分担)。ros/ で包むと自分たちの import のタイポまで同じ案内に化ける。
+
 ### 1.2 契約の正は shasou-core
 
 トピック名・型・QoS・フィールド規約・manifest スキーマは **すべて shasou-core が正**。
@@ -159,8 +164,9 @@ shasou-core の CLAUDE.md と共通。実装判断で迷ったらここに立ち
 
 ## 3. モジュール構成
 
-現状: **core/ は `checksum.py` を除いて実装済み。ros/ と `cli.py` は未着手。**
-CI が回しているのは core/ のテストと依存規律の検証だけ (ROS 2 環境が要らないため)。
+現状: **core/ は `checksum.py` を除いて実装済み。ros/ は `qos.py` のみ、`cli.py` は
+未着手。** CI が回しているのは core/ のテストと依存規律の検証だけ (ROS 2 環境が
+要らないため。ros/ のテストは `ros` マーカーで分離してある: §12)。
 
 ### core/ (ROS 非依存)
 
@@ -185,7 +191,7 @@ CI が回しているのは core/ のテストと依存規律の検証だけ (RO
 |---|---|---|
 | `node.py` | 収録ノード。購読・サービスサーバー・シグナル処理 | 未実装 |
 | `writer.py` | rosbag2 (MCAP) への書き込み。`BagWriter` Protocol を満たす | 未実装 |
-| `qos.py` | core の `QosProfile` → rclpy `QoSProfile` 変換 | 未実装 |
+| `qos.py` | core の `QosProfile` → rclpy `QoSProfile` 変換 | 実装済み |
 | `converters.py` | ROS メッセージ → core の型 (EventTag 等) | 未実装 |
 
 ---
